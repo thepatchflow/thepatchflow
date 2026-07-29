@@ -95,7 +95,7 @@ For example, if 'charge' is deprecated for 'amount', return: {"charge": "amount"
 	finalResp := AIResponse{JSONPatch: patch}
 
 	go func() {
-		triggerPREngine(req.TargetEndpoint, finalResp.JSONPatch)
+		OpenPR(req.TargetEndpoint, finalResp.JSONPatch)
 	}()
 
 	w.Header().Set("Content-Type", "application/json")
@@ -108,23 +108,11 @@ func sendMockResponse(w http.ResponseWriter, endpoint string) {
 	resp := AIResponse{JSONPatch: patch}
 	
 	go func() {
-		triggerPREngine(endpoint, resp.JSONPatch)
+		OpenPR(endpoint, resp.JSONPatch)
 	}()
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
-}
-
-func triggerPREngine(endpoint string, patch map[string]interface{}) {
-	// Call pr_engine
-	fmt.Println("---------------------------------------------------")
-	fmt.Printf("[PR ENGINE] Scanning customer repository...\n")
-	fmt.Printf("[PR ENGINE] Looking for usages matching deprecated schema keys: %v\n", patch)
-	fmt.Println("[PR ENGINE] Found 3 occurrences of deprecated parameter.")
-	fmt.Println("[PR ENGINE] Applying AST refactoring to update code...")
-	fmt.Println("[PR ENGINE] Running tests (npm test)... PASSED")
-	fmt.Println("[PR ENGINE] ✅ Pull Request #482 opened on GitHub!")
-	fmt.Println("---------------------------------------------------")
 }
 
 func main() {
