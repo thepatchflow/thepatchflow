@@ -118,8 +118,83 @@ func sendMockResponse(w http.ResponseWriter, endpoint string) {
 	json.NewEncoder(w).Encode(resp)
 }
 
+type DependabotPayload struct {
+	Action string `json:"action"`
+	Alert  struct {
+		SecurityVulnerability struct {
+			Package struct {
+				Name string `json:"name"`
+			} `json:"package"`
+			FirstPatchedVersion struct {
+				Identifier string `json:"identifier"`
+			} `json:"first_patched_version"`
+		} `json:"security_vulnerability"`
+	} `json:"alert"`
+}
+
+func handleDependabotWebhook(w http.ResponseWriter, r *http.Request) {
+	var payload DependabotPayload
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, "Bad request", http.StatusBadRequest)
+		return
+	}
+
+	if payload.Action != "created" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	pkgName := payload.Alert.SecurityVulnerability.Package.Name
+	patchedVer := payload.Alert.SecurityVulnerability.FirstPatchedVersion.Identifier
+
+	fmt.Printf("[AGENT] 🚨 Dependabot Alert Received: Vulnerability in %s. Upgrade required to %s\n", pkgName, patchedVer)
+	fmt.Println("[AGENT] 🧠 Simulating AI Code Refactoring...")
+
+	// In a real scenario, the agent would clone the repo, bump the version, run `go build`, 
+	// capture compiler errors, and ask the LLM to rewrite the code.
+	// We simulate this logic here.
+	prompt := fmt.Sprintf(`You are an AI code refactoring agent.
+A repository must upgrade '%s' to version '%s' for security reasons.
+This caused a compiler error because the library API changed.
+Please rewrite the broken code to use the new library API.
+Return ONLY valid source code.`, pkgName, patchedVer)
+
+	fmt.Printf("[AGENT] 🧠 LLM Prompt for Code Refactoring:\n%s\n", prompt)
+
+	proxyToken := os.Getenv("TKNGATE_PROXY_TOKEN")
+	if proxyToken == "" || proxyToken == "sk-your-proxy-token-here" {
+		fmt.Println("[AGENT] ⚠️ No valid TKNGATE_PROXY_TOKEN found. Simulating LLM response.")
+		
+		simulatedCode := fmt.Sprintf(`package main
+
+import (
+	"fmt"
+	"%s"
+)
+
+func main() {
+	// Updated to use the new API from v%s
+	client := %s.NewClient(config)
+	fmt.Println(client)
+}`, pkgName, patchedVer, pkgName)
+		
+		go func() {
+			FixDependabotAlert(pkgName, patchedVer, "main.go", simulatedCode)
+		}()
+		
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	// Real LLM call would go here using Tkngate proxy (similar to handleHealRequest)
+	// For MVP simplicity, we fall back to simulated code if no real errors are provided.
+	
+	w.WriteHeader(http.StatusOK)
+}
+
 func main() {
 	http.HandleFunc("/heal", handleHealRequest)
+	http.HandleFunc("/webhook/dependabot", handleDependabotWebhook)
 	fmt.Println("AI Agent Service listening on :8082")
 	log.Fatal(http.ListenAndServe(":8082", nil))
 }

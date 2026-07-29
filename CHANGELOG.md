@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Phase 5: Security / Dependabot Integration] - 2026-07-29
+
+### Added
+- Added `POST /webhook/dependabot` endpoint to `agent/main.go`.
+- Implemented new AI prompt for structural code refactoring on dependency upgrades.
+- Added `FixDependabotAlert` to `agent/github.go` to simulate repo cloning, AI code refactoring, and opening security PRs.
+
 ## [Phase 4: Dashboard] - 2026-07-29
 
 ### Added
