@@ -36,14 +36,17 @@ func handleHealRequest(w http.ResponseWriter, r *http.Request) {
 	fmt.Printf("[AGENT] Analyzing failure for endpoint: %s\n", req.TargetEndpoint)
 	fmt.Printf("[AGENT] Error received from upstream: %s\n", string(req.ErrorResponse))
 
-	apiKey := os.Getenv("OPENAI_API_KEY")
-	if apiKey == "" || apiKey == "sk-your-key-here" {
-		fmt.Println("[AGENT] ⚠️ No valid OPENAI_API_KEY found. Falling back to mocked response.")
+	proxyToken := os.Getenv("TKNGATE_PROXY_TOKEN")
+	if proxyToken == "" || proxyToken == "sk-your-proxy-token-here" {
+		fmt.Println("[AGENT] ⚠️ No valid TKNGATE_PROXY_TOKEN found. Falling back to mocked response.")
 		sendMockResponse(w, req.TargetEndpoint)
 		return
 	}
 
-	client := openai.NewClient(apiKey)
+	// ZERO-TRUST SECURITY: Route through Tkngate sidecar instead of hitting OpenAI directly.
+	config := openai.DefaultConfig(proxyToken)
+	config.BaseURL = "http://localhost:9090/v1"
+	client := openai.NewClientWithConfig(config)
 	
 	prompt := fmt.Sprintf(`You are an API self-healing infrastructure agent. 
 An HTTP request failed because of a schema change.
