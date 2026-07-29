@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Phase 7: Live Telemetry & API Integration] - 2026-07-29
+
+### Added
+- Integrated live telemetry feed from the Go Proxy to the React Dashboard.
+- Added `GET /api/telemetry` endpoint to the Fiber proxy to serve real-time metrics.
+- Built a React `useEffect` polling engine in the dashboard to render healing events live.
+- Updated the CLI to automatically boot the Mock API alongside the Proxy and Agent for streamlined local testing.
+
 ## [Phase 6: High-Performance & Unified CLI] - 2026-07-29
 
 ### Added

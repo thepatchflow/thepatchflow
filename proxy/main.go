@@ -8,18 +8,66 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/redis/go-redis/v9"
 	"github.com/valyala/fasthttp"
 )
 
+type TelemetryEvent struct {
+	ID       int    `json:"id"`
+	Endpoint string `json:"endpoint"`
+	Status   string `json:"status"`
+	Time     string `json:"time"`
+	Diff     string `json:"diff"`
+}
+
+type TelemetryData struct {
+	TotalErrors int              `json:"totalErrors"`
+	TotalHealed int              `json:"totalHealed"`
+	TotalPRs    int              `json:"totalPRs"`
+	Events      []TelemetryEvent `json:"events"`
+}
+
 var (
 	rdb              *redis.Client
 	ctx              = context.Background()
 	translationCache = make(map[string]map[string]string)
 	redisAvailable   = false
+
+	telemetry      TelemetryData
+	eventIDCounter int
+	telemetryMutex sync.Mutex
 )
+
+func pushTelemetryEvent(endpoint, status, diff string) {
+	telemetryMutex.Lock()
+	defer telemetryMutex.Unlock()
+	
+	eventIDCounter++
+	event := TelemetryEvent{
+		ID:       eventIDCounter,
+		Endpoint: endpoint,
+		Status:   status,
+		Time:     time.Now().Format("15:04:05"),
+		Diff:     diff,
+	}
+	// Insert at beginning
+	telemetry.Events = append([]TelemetryEvent{event}, telemetry.Events...)
+	if len(telemetry.Events) > 50 {
+		telemetry.Events = telemetry.Events[:50]
+	}
+	
+	if status == "ERROR" || status == "HEALED" {
+		telemetry.TotalErrors++
+	}
+	if status == "HEALED" {
+		telemetry.TotalHealed++
+		telemetry.TotalPRs++
+	}
+}
 
 func getCacheRule(endpoint string) (map[string]string, bool) {
 	if redisAvailable {
@@ -89,9 +137,15 @@ func Start() {
 	// Serve the static frontend dist if it exists
 	app.Static("/dashboard", "./dist")
 
+	app.Get("/api/telemetry", func(c *fiber.Ctx) error {
+		telemetryMutex.Lock()
+		defer telemetryMutex.Unlock()
+		return c.JSON(telemetry)
+	})
+
 	app.All("/*", func(c *fiber.Ctx) error {
 		path := c.Path()
-		if strings.HasPrefix(path, "/dashboard") {
+		if strings.HasPrefix(path, "/dashboard") || strings.HasPrefix(path, "/api/telemetry") {
 			return c.Next()
 		}
 
@@ -101,6 +155,8 @@ func Start() {
 		if rule, ok := getCacheRule(path); ok {
 			fmt.Println("[PROXY] ⚡ Cache Hit! Applying translation rule:", rule)
 			bodyBytes = applyTranslation(bodyBytes, rule)
+			ruleJson, _ := json.Marshal(rule)
+			pushTelemetryEvent(c.Method()+" "+path, "HEALED", string(ruleJson))
 		}
 
 		// 2. Forward to Target using FastHTTP
@@ -149,6 +205,9 @@ func Start() {
 
 						fmt.Println("[PROXY] 🔧 Applying AI fix and caching rule...")
 						setCacheRule(path, rule)
+						
+						ruleJson, _ := json.Marshal(rule)
+						pushTelemetryEvent(c.Method()+" "+path, "HEALED", string(ruleJson))
 
 						newBodyBytes := applyTranslation(bodyBytes, rule)
 
@@ -179,6 +238,7 @@ func Start() {
 				}
 			} else {
 				fmt.Println("[PROXY] Failed to reach AI Agent:", err)
+				pushTelemetryEvent(c.Method()+" "+path, "ERROR", err.Error())
 			}
 		}
 
