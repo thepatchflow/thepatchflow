@@ -1,4 +1,4 @@
-package main
+package agent
 
 import (
 	"context"
@@ -200,8 +200,8 @@ func FixDependabotAlert(pkgName, newVersion, targetFile, newCode string) {
 func simulateDependabotPR(pkgName, newVersion, targetFile, newCode string) {
 	fmt.Println("---------------------------------------------------")
 	fmt.Printf("[PR ENGINE] Scanning customer repository for vulnerable package %s...\n", pkgName)
-	fmt.Println("[PR ENGINE] Analyzing compiler errors due to breaking library API changes...")
-	fmt.Printf("[PR ENGINE] Applying AI refactoring to update %s...\n", targetFile)
+	fmt.Printf("[PR ENGINE] Analyzing compiler errors due to breaking API changes in v%s...\n", newVersion)
+	fmt.Printf("[PR ENGINE] Applying AI refactoring to update %s:\n%s\n", targetFile, newCode)
 	fmt.Println("[PR ENGINE] Running tests (go test ./...)... PASSED")
 	fmt.Println("[PR ENGINE] ✅ (Simulated) Security Pull Request opened on GitHub!")
 	fmt.Println("---------------------------------------------------")

@@ -10,12 +10,21 @@ Patchflow consists of two planes:
 2. **The Control Plane (AI Agent & PR Engine):** A heavy-lifting AI service that analyzes breaking API changes using LLMs, generates translation rules for the proxy, and patches the customer's codebase via the GitHub API.
 3. **The Dashboard (UI):** A React-based web interface to monitor intercepted errors, track live autonomic healing, and manage services. 
 
-## Running Locally (MVP)
+## Running Locally
 
-1. Run the Mock API: `go run mock_api/main.go`
-2. Run the AI Agent: `go run agent/main.go`
-3. Run the Proxy: `go run proxy/main.go`
-4. Send a failing request to the Proxy:
+Patchflow now ships as a single, unified binary for maximum developer experience.
+
+1. Build the binary:
+   ```bash
+   go build -o patchflow
+   ```
+2. Run the interactive CLI:
+   ```bash
+   ./patchflow
+   ```
+   *Select `Start Backend (Proxy & Agent)` or `Start Dashboard UI` to boot the infrastructure.*
+
+3. Send a failing request to the Proxy (runs on port 8080):
 ```bash
 curl -X POST http://localhost:8080/v1/payments -d '{"charge": 15}'
 ```
