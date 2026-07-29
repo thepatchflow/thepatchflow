@@ -19,7 +19,7 @@ graph TD
 ```
 
 ### The Data Plane
-The Proxy must never block waiting for AI during standard requests. It relies entirely on a high-speed cache for known fixes.
+The Proxy (`github.com/gofiber/fiber/v2`) must never block waiting for AI during standard requests. It relies entirely on a high-speed Redis distributed cache (`github.com/redis/go-redis/v9`) for known fixes. Upstream requests are sent using zero-allocation clients (`github.com/valyala/fasthttp`).
 
 ### The Control Plane
 The Agent handles rate limits, API schemas, and context window management for the LLM. It is decoupled completely from the customer's live traffic flow.

@@ -1,4 +1,4 @@
-package main
+package mockapi
 
 import (
 	"encoding/json"
@@ -38,7 +38,7 @@ func paymentHandler(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, `{"error": "invalid_request_error", "message": "Missing required parameter: amount"}`, http.StatusBadRequest)
 }
 
-func main() {
+func Start() {
 	http.HandleFunc("/v1/payments", paymentHandler)
 	fmt.Println("Mock API listening on :8081 (Expects payload: {\"amount\": <int>})")
 	log.Fatal(http.ListenAndServe(":8081", nil))

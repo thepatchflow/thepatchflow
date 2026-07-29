@@ -1,4 +1,4 @@
-package main
+package agent
 
 import (
 	"context"
@@ -192,7 +192,7 @@ func main() {
 	w.WriteHeader(http.StatusOK)
 }
 
-func main() {
+func Start() {
 	http.HandleFunc("/heal", handleHealRequest)
 	http.HandleFunc("/webhook/dependabot", handleDependabotWebhook)
 	fmt.Println("AI Agent Service listening on :8082")
