@@ -26,3 +26,8 @@ go.work
 .idea/
 *.swp
 *~
+
+.agents/
+
+# Build output
+# dist/ is intentionally committed so the core project can serve it without rebuilding the frontend
