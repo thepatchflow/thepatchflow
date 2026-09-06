@@ -55,6 +55,8 @@ func main() {
 func runCommand(command string) {
 	switch command {
 	case "serve":
+		go mockapi.Start()
+		time.Sleep(1 * time.Second)
 		go agent.Start()
 		time.Sleep(1 * time.Second)
 		proxy.Start()
@@ -62,6 +64,8 @@ func runCommand(command string) {
 		fmt.Println("=========================================================================")
 		fmt.Println("🌐 DASHBOARD RUNNING AT: http://localhost:8080/dashboard")
 		fmt.Printf("=========================================================================\n\n")
+		go mockapi.Start()
+		time.Sleep(1 * time.Second)
 		go agent.Start()
 		time.Sleep(1 * time.Second)
 		proxy.Start()

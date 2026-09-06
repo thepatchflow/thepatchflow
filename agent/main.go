@@ -7,6 +7,9 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
+
+	"patchflow/healstore"
 
 	"github.com/joho/godotenv"
 	openai "github.com/sashabaranov/go-openai"
@@ -20,6 +23,27 @@ type AIRequest struct {
 
 type AIResponse struct {
 	JSONPatch map[string]interface{} `json:"json_patch"`
+}
+
+// RecordPayload is POSTed by the proxy after it replays the patched request
+// against the upstream API. It is the ground-truth entry in the healing index.
+type RecordPayload struct {
+	Vendor       string            `json:"vendor"`
+	Endpoint     string            `json:"endpoint"`
+	OldSchema    map[string]string `json:"old_schema"`
+	NewSchema    map[string]string `json:"new_schema"`
+	Patch        map[string]string `json:"patch"`
+	Verified     bool              `json:"verified"`
+	ReplayStatus int               `json:"replay_status"`
+}
+
+var healStore = healstore.New(healDataPath())
+
+func healDataPath() string {
+	if p := os.Getenv("HEAL_DATA_PATH"); p != "" {
+		return p
+	}
+	return healstore.DefaultPath
 }
 
 func init() {
@@ -97,10 +121,6 @@ For example, if 'charge' is deprecated for 'amount', return: {"charge": "amount"
 
 	finalResp := AIResponse{JSONPatch: patch}
 
-	go func() {
-		OpenPR(req.TargetEndpoint, finalResp.JSONPatch)
-	}()
-
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(finalResp)
 }
@@ -109,13 +129,66 @@ func sendMockResponse(w http.ResponseWriter, endpoint string) {
 	fmt.Println("[AGENT] 🧠 (Mocked) LLM deduced breaking change: 'charge' was deprecated for 'amount'. Generating translation rule...")
 	patch := map[string]interface{}{"charge": "amount"}
 	resp := AIResponse{JSONPatch: patch}
-	
-	go func() {
-		OpenPR(endpoint, resp.JSONPatch)
-	}()
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+func handleHealRecord(w http.ResponseWriter, r *http.Request) {
+	var p RecordPayload
+	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+		http.Error(w, "Bad request", http.StatusBadRequest)
+		return
+	}
+
+	if p.Vendor == "" {
+		p.Vendor = healstore.Vendor(p.Endpoint)
+	}
+
+	event := healStore.Record(healstore.HealEvent{
+		Vendor:       p.Vendor,
+		Endpoint:     p.Endpoint,
+		OldSchema:    p.OldSchema,
+		NewSchema:    p.NewSchema,
+		Patch:        p.Patch,
+		Verified:     p.Verified,
+		ReplayStatus: p.ReplayStatus,
+	})
+
+	fmt.Printf("[AGENT] 📦 Heal event recorded: %s %s (verified=%v, status=%d)\n", p.Vendor, p.Endpoint, p.Verified, p.ReplayStatus)
+
+	if len(p.Patch) > 0 {
+		// The PR + verification comment happens off the proxy's hot path.
+		go func(ev healstore.HealEvent) {
+			prURL := OpenPR(ev.Endpoint, stringMapToInterface(ev.Patch), ev.Verified, ev.ReplayStatus)
+			if prURL != "" {
+				healStore.UpdatePRURL(ev.ID, prURL)
+				fmt.Printf("[PR ENGINE] 📝 PR URL stored for event %s: %s\n", ev.ID, prURL)
+			}
+		}(event)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(event)
+}
+
+func handleHeals(w http.ResponseWriter, r *http.Request) {
+	limit := 50
+	if q := r.URL.Query().Get("limit"); q != "" {
+		if n, err := strconv.Atoi(q); err == nil && n >= 0 {
+			limit = n
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(healStore.List(limit))
+}
+
+func stringMapToInterface(m map[string]string) map[string]interface{} {
+	out := make(map[string]interface{}, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
 }
 
 type DependabotPayload struct {
@@ -194,6 +267,8 @@ func main() {
 
 func Start() {
 	http.HandleFunc("/heal", handleHealRequest)
+	http.HandleFunc("/heal/record", handleHealRecord)
+	http.HandleFunc("/api/heals", handleHeals)
 	http.HandleFunc("/webhook/dependabot", handleDependabotWebhook)
 	fmt.Println("AI Agent Service listening on :8082")
 	log.Fatal(http.ListenAndServe(":8082", nil))
