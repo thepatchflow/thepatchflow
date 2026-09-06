@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Phase 9: Predictive Proactive Heals] - 2026-09-06
+
+### Added
+- `healstore.Predictions()`: recurring vendor field-migrations ranked by confidence — the "you will break next" signal derived from the ground-truth index.
+- Agent + proxy `GET /api/predictions` and `GET /api/vendors` (per-vendor `Leaders()` stats).
+- `./patchflow seed`: idempotently seeds a multi-vendor labeled breaking-change index for instant demos.
+- Dashboard: **Proactive Heal Predictions** section on the Ground Truth tab (confidence %, seen count, last heal timestamp).
+- Real LLM path without Tkngate: `llmClient()` routes through the Tkngate Zero-Trust sidecar, falls back to `OPENAI_API_KEY`, and mocks only when neither is configured.
+
 ## [Phase 8: Replay-Verification & Ground-Truth Index] - 2026-09-06
 
 ### Added

@@ -71,6 +71,11 @@ func runCommand(command string) {
 		proxy.Start()
 	case "mock":
 		mockapi.Start()
+	case "seed":
+		// Idempotently seed a multi-vendor ground-truth index so the
+		// breaking-change predictions are immediately demonstrable.
+		added, total := agent.SeedStore()
+		fmt.Printf("✅ Seeded ground-truth index (added=%d, total=%d) at %s\n", added, total, agent.DataPath())
 	default:
 		fmt.Printf("Unknown command: %s\n", command)
 		os.Exit(1)

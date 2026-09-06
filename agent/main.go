@@ -46,8 +46,36 @@ func healDataPath() string {
 	return healstore.DefaultPath
 }
 
+// SeedStore idempotently populates the ground-truth index for demos.
+func SeedStore() (added, total int) {
+	added = healStore.Seed()
+	return added, len(healStore.List(10000))
+}
+
+// DataPath exposes the persistence location of the index.
+func DataPath() string {
+	return healStore.Path()
+}
+
 func init() {
 	godotenv.Load() // Loads .env if it exists
+}
+
+// llmClient returns an OpenAI-compatible client. Preferred path is the Tkngate
+// Zero-Trust sidecar (scoped proxy token); falls back to a direct OpenAI key.
+func llmClient() (*openai.Client, error) {
+	proxyToken := os.Getenv("TKNGATE_PROXY_TOKEN")
+	if proxyToken != "" && proxyToken != "sk-your-proxy-token-here" {
+		fmt.Println("[AGENT] 🔐 Routing LLM calls through Tkngate Zero-Trust sidecar")
+		config := openai.DefaultConfig(proxyToken)
+		config.BaseURL = "http://localhost:9090/v1"
+		return openai.NewClientWithConfig(config), nil
+	}
+	if apiKey := os.Getenv("OPENAI_API_KEY"); apiKey != "" {
+		fmt.Println("[AGENT] 🧠 Using direct OpenAI API key")
+		return openai.NewClient(apiKey), nil
+	}
+	return nil, fmt.Errorf("missing TKNGATE_PROXY_TOKEN or OPENAI_API_KEY")
 }
 
 func handleHealRequest(w http.ResponseWriter, r *http.Request) {
@@ -60,18 +88,14 @@ func handleHealRequest(w http.ResponseWriter, r *http.Request) {
 	fmt.Printf("[AGENT] Analyzing failure for endpoint: %s\n", req.TargetEndpoint)
 	fmt.Printf("[AGENT] Error received from upstream: %s\n", string(req.ErrorResponse))
 
-	proxyToken := os.Getenv("TKNGATE_PROXY_TOKEN")
-	if proxyToken == "" || proxyToken == "sk-your-proxy-token-here" {
-		fmt.Println("[AGENT] ⚠️ No valid TKNGATE_PROXY_TOKEN found. Falling back to mocked response.")
+	client, err := llmClient()
+	if err != nil {
+		fmt.Println("[AGENT] ⚠️ No LLM credentials found:", err)
+		fmt.Println("[AGENT] ⚠️ Falling back to mocked response. Set TKNGATE_PROXY_TOKEN or OPENAI_API_KEY for the real path.")
 		sendMockResponse(w, req.TargetEndpoint)
 		return
 	}
 
-	// ZERO-TRUST SECURITY: Route through Tkngate sidecar instead of hitting OpenAI directly.
-	config := openai.DefaultConfig(proxyToken)
-	config.BaseURL = "http://localhost:9090/v1"
-	client := openai.NewClientWithConfig(config)
-	
 	prompt := fmt.Sprintf(`You are an API self-healing infrastructure agent. 
 An HTTP request failed because of a schema change.
 Target Endpoint: %s
@@ -183,6 +207,25 @@ func handleHeals(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(healStore.List(limit))
 }
 
+// handleVendors exposes the per-vendor breaking-change index stats.
+func handleVendors(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(healStore.Leaders())
+}
+
+// handlePredictions exposes the proactive-heal signals: which vendor field
+// migrations have recurred most, so future breakages can be predicted.
+func handlePredictions(w http.ResponseWriter, r *http.Request) {
+	limit := 20
+	if q := r.URL.Query().Get("limit"); q != "" {
+		if n, err := strconv.Atoi(q); err == nil && n >= 0 {
+			limit = n
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(healStore.Predictions(limit))
+}
+
 func stringMapToInterface(m map[string]string) map[string]interface{} {
 	out := make(map[string]interface{}, len(m))
 	for k, v := range m {
@@ -269,6 +312,8 @@ func Start() {
 	http.HandleFunc("/heal", handleHealRequest)
 	http.HandleFunc("/heal/record", handleHealRecord)
 	http.HandleFunc("/api/heals", handleHeals)
+	http.HandleFunc("/api/vendors", handleVendors)
+	http.HandleFunc("/api/predictions", handlePredictions)
 	http.HandleFunc("/webhook/dependabot", handleDependabotWebhook)
 	fmt.Println("AI Agent Service listening on :8082")
 	log.Fatal(http.ListenAndServe(":8082", nil))

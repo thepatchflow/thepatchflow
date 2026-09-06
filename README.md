@@ -3,7 +3,13 @@
 Patchflow is a self-healing API gateway and autonomic infrastructure layer. 
 When an upstream API breaks due to a schema change or deprecation, Patchflow dynamically translates the payload in real-time to keep your application online, **replays the exact failing request to prove the fix works**, and asynchronously opens a Pull Request in your repository with a permanent fix — stamped with the replay-verification result.
 
-Every healed request is recorded to `data/heals.jsonl` as a **ground-truth breaking-change index**: which vendor broke, the old→new schema migration, the applied patch, and whether the replay verified it. This dataset is Patchflow's compounding moat.
+Every healed request is recorded to `data/heals.jsonl` as a **ground-truth breaking-change index**: which vendor broke, the old→new schema migration, the applied patch, and whether the replay verified it. Over time the index turns **predictive** — `GET /api/predictions` ranks recurring migrations by confidence, so Patchflow can tell you *which vendor field is about to break next* before your traffic hits it.
+
+Seed a multi-vendor demo index instantly:
+
+```bash
+./patchflow seed
+```
 
 ## Architecture
 
