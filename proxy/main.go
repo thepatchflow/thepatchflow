@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -14,6 +16,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/redis/go-redis/v9"
 	"github.com/valyala/fasthttp"
+	"patchflow/healstore"
 )
 
 type TelemetryEvent struct {
@@ -22,6 +25,7 @@ type TelemetryEvent struct {
 	Status   string `json:"status"`
 	Time     string `json:"time"`
 	Diff     string `json:"diff"`
+	Verified bool   `json:"verified"`
 }
 
 type TelemetryData struct {
@@ -40,9 +44,14 @@ var (
 	telemetry      TelemetryData
 	eventIDCounter int
 	telemetryMutex sync.Mutex
+
+	agentURLRecord = "http://localhost:8082/heal/record"
+	agentURLHeals  = "http://localhost:8082/api/heals"
 )
 
-func pushTelemetryEvent(endpoint, status, diff string) {
+// verified=true means the translation rule was proven against the real upstream:
+// the exact failing request was replayed with the translation applied and succeeded.
+func pushTelemetryEvent(endpoint, status, diff string, verified bool) {
 	telemetryMutex.Lock()
 	defer telemetryMutex.Unlock()
 	
@@ -53,6 +62,7 @@ func pushTelemetryEvent(endpoint, status, diff string) {
 		Status:   status,
 		Time:     time.Now().Format("15:04:05"),
 		Diff:     diff,
+		Verified: verified,
 	}
 	// Insert at beginning
 	telemetry.Events = append([]TelemetryEvent{event}, telemetry.Events...)
@@ -116,6 +126,68 @@ func applyTranslation(body []byte, rule map[string]string) []byte {
 	return body
 }
 
+// inferSchema extracts the JSON key→type pairs from a request body. This is the
+// ground-truth "old_schema"/"new_schema" pair that makes the healing index useful.
+func inferSchema(body []byte) map[string]string {
+	var payload map[string]interface{}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil
+	}
+	schema := make(map[string]string, len(payload))
+	for k, v := range payload {
+		schema[k] = jsonType(v)
+	}
+	return schema
+}
+
+func jsonType(v interface{}) string {
+	switch v.(type) {
+	case string:
+		return "string"
+	case float64:
+		return "number"
+	case bool:
+		return "bool"
+	case map[string]interface{}:
+		return "object"
+	case []interface{}:
+		return "array"
+	case nil:
+		return "null"
+	default:
+		return "unknown"
+	}
+}
+
+// recordHealEvent POSTs the ground-truth heal record to the agent's store.
+// Runs off the hot path in a goroutine so the proxy never waits on it.
+func recordHealEvent(endpoint string, oldBody, newBody []byte, rule map[string]string, verified bool, replayStatus int) {
+	payload := map[string]interface{}{
+		"vendor":        healstore.Vendor(endpoint),
+		"endpoint":      endpoint,
+		"old_schema":    inferSchema(oldBody),
+		"new_schema":    inferSchema(newBody),
+		"patch":         rule,
+		"verified":      verified,
+		"replay_status": replayStatus,
+	}
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Post(agentURLRecord, "application/json", bytes.NewBuffer(payloadBytes))
+	if err != nil {
+		fmt.Println("[PROXY] ⚠️ Could not record heal event:", err)
+		return
+	}
+	resp.Body.Close()
+
+	if verified {
+		fmt.Printf("[PROXY] 📦 Heal event recorded & ground-truth stored for %s (replay HTTP %d)\n", endpoint, replayStatus)
+	}
+}
+
 func Start() {
 	rdb = redis.NewClient(&redis.Options{
 		Addr: "localhost:6379",
@@ -143,9 +215,24 @@ func Start() {
 		return c.JSON(telemetry)
 	})
 
+	// The ground-truth breaking-change index lives in the agent; proxy here.
+	app.Get("/api/heals", func(c *fiber.Ctx) error {
+		client := &http.Client{Timeout: 10 * time.Second}
+		resp, err := client.Get(agentURLHeals + "?limit=" + c.Query("limit", "50"))
+		if err != nil {
+			return c.Status(fiber.StatusBadGateway).JSON(map[string]string{"error": "agent unreachable"})
+		}
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return c.Status(fiber.StatusBadGateway).JSON(map[string]string{"error": "failed to read agent response"})
+		}
+		return c.Status(resp.StatusCode).Type("json").Send(body)
+	})
+
 	app.All("/*", func(c *fiber.Ctx) error {
 		path := c.Path()
-		if strings.HasPrefix(path, "/dashboard") || strings.HasPrefix(path, "/api/telemetry") {
+		if strings.HasPrefix(path, "/dashboard") || strings.HasPrefix(path, "/api/telemetry") || strings.HasPrefix(path, "/api/heals") {
 			return c.Next()
 		}
 
@@ -156,7 +243,7 @@ func Start() {
 			fmt.Println("[PROXY] ⚡ Cache Hit! Applying translation rule:", rule)
 			bodyBytes = applyTranslation(bodyBytes, rule)
 			ruleJson, _ := json.Marshal(rule)
-			pushTelemetryEvent(c.Method()+" "+path, "HEALED", string(ruleJson))
+			pushTelemetryEvent(c.Method()+" "+path, "HEALED", string(ruleJson), true)
 		}
 
 		// 2. Forward to Target using FastHTTP
@@ -192,7 +279,10 @@ func Start() {
 			}
 			agentPayloadBytes, _ := json.Marshal(agentPayload)
 
-			agentResp, err := http.Post(agentURL, "application/json", bytes.NewBuffer(agentPayloadBytes))
+			// The AI call happens only on the first failure and is published to
+			// the translation cache in-memory, so subsequent requests never wait.
+			agentClient := &http.Client{Timeout: 20 * time.Second}
+			agentResp, err := agentClient.Post(agentURL, "application/json", bytes.NewBuffer(agentPayloadBytes))
 			if err == nil {
 				defer agentResp.Body.Close()
 				var aiResult map[string]interface{}
@@ -203,16 +293,11 @@ func Start() {
 							rule[k] = v.(string)
 						}
 
-						fmt.Println("[PROXY] 🔧 Applying AI fix and caching rule...")
-						setCacheRule(path, rule)
-						
-						ruleJson, _ := json.Marshal(rule)
-						pushTelemetryEvent(c.Method()+" "+path, "HEALED", string(ruleJson))
-
+						fmt.Println("[PROXY] 🔧 Applying AI fix and replaying request to target API...")
 						newBodyBytes := applyTranslation(bodyBytes, rule)
 
-						// Replay request
-						fmt.Println("[PROXY] 🔁 Replaying request to target API...")
+						// Replay the EXACT failing request with the translation applied.
+						// This is the verification step: does the rule actually heal?
 						retryReq := fasthttp.AcquireRequest()
 						defer fasthttp.ReleaseRequest(retryReq)
 						
@@ -226,19 +311,37 @@ func Start() {
 						retryResp := fasthttp.AcquireResponse()
 						defer fasthttp.ReleaseResponse(retryResp)
 						
+						replayStatus := 0
+						verified := false
 						if err := client.Do(retryReq, retryResp); err == nil {
-							fmt.Println("[PROXY] ✅ Request successfully self-healed!")
+							replayStatus = retryResp.StatusCode()
+							verified = replayStatus < 400
+						}
+
+						ruleJson, _ := json.Marshal(rule)
+
+						// Ground-truth index entry + PR + verification comment (async).
+						go recordHealEvent(path, bodyBytes, newBodyBytes, rule, verified, replayStatus)
+
+						if verified {
+							fmt.Printf("[PROXY] ✅ Request self-healed and REPLAY-VERIFIED (HTTP %d)!\n", replayStatus)
+							setCacheRule(path, rule)
+							pushTelemetryEvent(c.Method()+" "+path, "HEALED", string(ruleJson), verified)
+
 							c.Status(retryResp.StatusCode())
 							retryResp.Header.VisitAll(func(k, v []byte) {
 								c.Set(string(k), string(v))
 							})
 							return c.Send(retryResp.Body())
 						}
+
+						fmt.Printf("[PROXY] ⚠️ Translation rule did NOT verify on replay (HTTP %d). Not caching.\n", replayStatus)
+						pushTelemetryEvent(c.Method()+" "+path, "ERROR", "rule failed verification: HTTP "+strconv.Itoa(replayStatus), false)
 					}
 				}
 			} else {
 				fmt.Println("[PROXY] Failed to reach AI Agent:", err)
-				pushTelemetryEvent(c.Method()+" "+path, "ERROR", err.Error())
+				pushTelemetryEvent(c.Method()+" "+path, "ERROR", err.Error(), false)
 			}
 		}
 

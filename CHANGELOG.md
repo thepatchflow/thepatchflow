@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Phase 8: Replay-Verification & Ground-Truth Index] - 2026-09-06
+
+### Added
+- **Replay-verified heals:** the proxy now replays the *exact failing request* with the AI translation applied against the upstream API and only caches rules that return < HTTP 400.
+- **Ground-truth breaking-change index:** every heal event is persisted to `data/heals.jsonl` as `{vendor, endpoint, old_schema, new_schema, patch, verified, replay_status, pr_url, timestamp}` — the cross-customer dataset that compounds.
+- New `healstore` package: JSONL persistence, vendor inference from endpoints, PR-URL backfill, and vendor leaders stats.
+- Agent endpoints: `POST /heal/record` (ground-truth ingestion + async PR trigger) and `GET /api/heals` (breaking-change index).
+- Proxy endpoint: `GET /api/heals` proxies the index into the dashboard.
+- **PR verification comments:** `CommentVerification` stamps `Replay Verification Passed/Failed (HTTP n)` on the opened PR — proof Dependabot/Renovate-class tools can't produce, since they never saw the failing traffic.
+- Dashboard: new **Ground Truth** tab rendering the breaking-change index, verified/unverified badges, old→new schema migrations, and PR links.
+
+### Changed
+- PR opening moved off the proxy hot path into the agent's record handler.
+- Agent calls in the proxy now use a `20s` timeout instead of blocking forever.
+- Telemetry events carry a `verified` flag.
+
 ## [Phase 7: Live Telemetry & API Integration] - 2026-07-29
 
 ### Added
@@ -16,7 +32,7 @@ All notable changes to this project will be documented in this file.
 - Complete rewrite of the proxy router to use `github.com/gofiber/fiber/v2` for high throughput.
 - Implemented `github.com/valyala/fasthttp` for optimized upstream API requests.
 - Added `go-redis` distributed caching layer for AI translations with an in-memory fallback.
-- Added a Vercel-style interactive CLI (`promptui`) with an elegant `▲ Patchflow` selector menu.
+- Added a interactive CLI (`promptui`) with an elegant `Patchflow` selector menu.
 
 ### Changed
 - Refactored `proxy`, `agent`, and `mock_api` out of independent scripts into modular packages.

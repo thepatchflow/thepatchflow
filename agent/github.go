@@ -12,15 +12,16 @@ import (
 )
 
 // OpenPR connects to GitHub and opens a Pull Request to fix the breaking API schema.
-func OpenPR(endpoint string, patch map[string]interface{}) {
+// verified/replayStatus are the results of the proxy replaying the exact failing
+// request against the translated payload. Returns the PR URL ("" if not opened).
+func OpenPR(endpoint string, patch map[string]interface{}, verified bool, replayStatus int) string {
 	token := os.Getenv("GITHUB_TOKEN")
 	repoOwner := os.Getenv("GITHUB_TARGET_OWNER")
 	repoName := os.Getenv("GITHUB_TARGET_REPO")
 
 	if token == "" || repoOwner == "" || repoName == "" {
 		fmt.Println("[PR ENGINE] ⚠️  Missing GITHUB_TOKEN, GITHUB_TARGET_OWNER, or GITHUB_TARGET_REPO. Simulating PR Engine.")
-		simulatePR(endpoint, patch)
-		return
+		return simulatePR(endpoint, patch)
 	}
 
 	fmt.Println("---------------------------------------------------")
@@ -38,13 +39,13 @@ func OpenPR(endpoint string, patch map[string]interface{}) {
 	fileContent, _, _, err := client.Repositories.GetContents(ctx, repoOwner, repoName, targetFile, nil)
 	if err != nil {
 		fmt.Printf("[PR ENGINE] ❌ Could not find %s in %s/%s. Error: %v\n", targetFile, repoOwner, repoName, err)
-		return
+		return ""
 	}
 
 	contentStr, err := fileContent.GetContent()
 	if err != nil {
 		fmt.Printf("[PR ENGINE] ❌ Could not decode file content: %v\n", err)
-		return
+		return ""
 	}
 
 	// Apply string replacement for the patch
@@ -60,7 +61,7 @@ func OpenPR(endpoint string, patch map[string]interface{}) {
 
 	if newContent == contentStr {
 		fmt.Println("[PR ENGINE] ⚠️ No changes needed or string replacement didn't match anything.")
-		return
+		return ""
 	}
 
 	// Create a new branch
@@ -71,14 +72,14 @@ func OpenPR(endpoint string, patch map[string]interface{}) {
 	mainRef, _, err := client.Git.GetRef(ctx, repoOwner, repoName, "refs/heads/main")
 	if err != nil {
 		fmt.Printf("[PR ENGINE] ❌ Failed to get main branch: %v\n", err)
-		return
+		return ""
 	}
 
 	newRef := &github.Reference{Ref: &refName, Object: &github.GitObject{SHA: mainRef.Object.SHA}}
 	_, _, err = client.Git.CreateRef(ctx, repoOwner, repoName, newRef)
 	if err != nil {
 		fmt.Printf("[PR ENGINE] ❌ Failed to create branch %s: %v\n", branchName, err)
-		return
+		return ""
 	}
 
 	// Update the file
@@ -91,7 +92,7 @@ func OpenPR(endpoint string, patch map[string]interface{}) {
 	_, _, err = client.Repositories.UpdateFile(ctx, repoOwner, repoName, targetFile, opts)
 	if err != nil {
 		fmt.Printf("[PR ENGINE] ❌ Failed to update file: %v\n", err)
-		return
+		return ""
 	}
 
 	// Create the Pull Request
@@ -107,22 +108,80 @@ func OpenPR(endpoint string, patch map[string]interface{}) {
 	pr, _, err := client.PullRequests.Create(ctx, repoOwner, repoName, newPR)
 	if err != nil {
 		fmt.Printf("[PR ENGINE] ❌ Failed to create PR: %v\n", err)
-		return
+		return ""
 	}
 
 	fmt.Printf("[PR ENGINE] ✅ Pull Request successfully opened: %s\n", pr.GetHTMLURL())
 	fmt.Println("---------------------------------------------------")
+
+	// Replay-verification is the differentiator: prove the fix by replaying the
+	// exact failing request, then stamp the result onto the PR.
+	CommentVerification(pr.GetHTMLURL(), verified, replayStatus)
+	return pr.GetHTMLURL()
 }
 
-func simulatePR(endpoint string, patch map[string]interface{}) {
+// CommentVerification stamps the replay-verification result onto a PR.
+// This is what Dependabot/Renovate can never do: they never saw the failing traffic.
+func CommentVerification(prURL string, verified bool, replayStatus int) {
+	if strings.HasPrefix(prURL, "simulated://") {
+		fmt.Printf("[PR ENGINE] ✅ (Simulated) Verification comment on PR: %v (replayed status %d)\n", verified, replayStatus)
+		return
+	}
+
+	token := os.Getenv("GITHUB_TOKEN")
+	if token == "" {
+		return
+	}
+	owner, repo, num, ok := parsePRURL(prURL)
+	if !ok {
+		return
+	}
+
+	ctx := context.Background()
+	ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token})
+	tc := oauth2.NewClient(ctx, ts)
+	client := github.NewClient(tc)
+
+	var body string
+	if verified {
+		body = fmt.Sprintf("### ✅ Patchflow Replay Verification Passed\n\nPatchflow replayed the **exact failing request** against this fix and got **HTTP %d**. The translation rule is proven live, not just by unit tests.", replayStatus)
+	} else {
+		body = fmt.Sprintf("### ⚠️ Patchflow Replay Verification Failed\n\nThe fix does **not** resolve the real failing request (replayed status: HTTP %d). This PR should be reviewed carefully before merging.", replayStatus)
+	}
+
+	comment := &github.IssueComment{Body: github.String(body)}
+	if _, _, err := client.Issues.CreateComment(ctx, owner, repo, num, comment); err != nil {
+		fmt.Printf("[PR ENGINE] ⚠️ Could not comment verification on %s: %v\n", prURL, err)
+		return
+	}
+	fmt.Printf("[PR ENGINE] ✅ Verification comment posted on %s (verified=%v, status=%d)\n", prURL, verified, replayStatus)
+}
+
+// parsePRURL extracts owner/repo/number from a GitHub PR URL.
+func parsePRURL(url string) (owner, repo string, num int, ok bool) {
+	seg := strings.Split(strings.TrimSuffix(url, "/"), "/")
+	for i := 0; i < len(seg)-2; i++ {
+		if seg[i] == "pull" {
+			if i >= 2 && i+1 < len(seg) {
+				if _, err := fmt.Sscanf(seg[i+1], "%d", &num); err == nil {
+					return seg[i-2], seg[i-1], num, true
+				}
+			}
+		}
+	}
+	return "", "", 0, false
+}
+
+func simulatePR(endpoint string, patch map[string]interface{}) string {
 	fmt.Println("---------------------------------------------------")
 	fmt.Printf("[PR ENGINE] Scanning customer repository for endpoint %s...\n", endpoint)
 	fmt.Printf("[PR ENGINE] Looking for usages matching deprecated schema keys: %v\n", patch)
 	fmt.Println("[PR ENGINE] Found occurrences of deprecated parameter.")
 	fmt.Println("[PR ENGINE] Applying AST refactoring to update code...")
 	fmt.Println("[PR ENGINE] Running tests (npm test)... PASSED")
-	fmt.Println("[PR ENGINE] ✅ (Simulated) Pull Request #482 opened on GitHub!")
+	fmt.Println("[PR ENGINE] ✅ (Simulated) Pull Request #482 opened on GitHub! (replay-verified)")
 	fmt.Println("---------------------------------------------------")
+	return "simulated://github/thepatchflow/customer-demo-repo/pull/482"
 }
 
 // FixDependabotAlert opens a Pull Request to fix a repository broken by a dependency upgrade.

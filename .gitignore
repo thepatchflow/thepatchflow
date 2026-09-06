@@ -21,6 +21,15 @@ go.work
 .env
 .env.local
 
+# Dev binaries (built for local testing, not committed)
+patchflow-dev
+/patchflow
+/agent
+/proxy
+
+# Ground-truth healing index (runtime data, regenerated)
+data/
+
 # Editor specific
 .vscode/
 .idea/
