@@ -47,6 +47,8 @@ var (
 
 	agentURLRecord = "http://localhost:8082/heal/record"
 	agentURLHeals  = "http://localhost:8082/api/heals"
+	agentURLVendors   = "http://localhost:8082/api/vendors"
+	agentURLPreds  = "http://localhost:8082/api/predictions"
 )
 
 // verified=true means the translation rule was proven against the real upstream:
@@ -159,6 +161,21 @@ func jsonType(v interface{}) string {
 	}
 }
 
+// proxyAgentJSON fetches a JSON payload from the agent service and forwards it.
+func proxyAgentJSON(c *fiber.Ctx, url string) error {
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		return c.Status(fiber.StatusBadGateway).JSON(map[string]string{"error": "agent unreachable"})
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return c.Status(fiber.StatusBadGateway).JSON(map[string]string{"error": "failed to read agent response"})
+	}
+	return c.Status(resp.StatusCode).Type("json").Send(body)
+}
+
 // recordHealEvent POSTs the ground-truth heal record to the agent's store.
 // Runs off the hot path in a goroutine so the proxy never waits on it.
 func recordHealEvent(endpoint string, oldBody, newBody []byte, rule map[string]string, verified bool, replayStatus int) {
@@ -217,22 +234,18 @@ func Start() {
 
 	// The ground-truth breaking-change index lives in the agent; proxy here.
 	app.Get("/api/heals", func(c *fiber.Ctx) error {
-		client := &http.Client{Timeout: 10 * time.Second}
-		resp, err := client.Get(agentURLHeals + "?limit=" + c.Query("limit", "50"))
-		if err != nil {
-			return c.Status(fiber.StatusBadGateway).JSON(map[string]string{"error": "agent unreachable"})
-		}
-		defer resp.Body.Close()
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return c.Status(fiber.StatusBadGateway).JSON(map[string]string{"error": "failed to read agent response"})
-		}
-		return c.Status(resp.StatusCode).Type("json").Send(body)
+		return proxyAgentJSON(c, agentURLHeals+"?limit="+c.Query("limit", "50"))
+	})
+	app.Get("/api/vendors", func(c *fiber.Ctx) error {
+		return proxyAgentJSON(c, agentURLVendors)
+	})
+	app.Get("/api/predictions", func(c *fiber.Ctx) error {
+		return proxyAgentJSON(c, agentURLPreds+"?limit="+c.Query("limit", "20"))
 	})
 
 	app.All("/*", func(c *fiber.Ctx) error {
 		path := c.Path()
-		if strings.HasPrefix(path, "/dashboard") || strings.HasPrefix(path, "/api/telemetry") || strings.HasPrefix(path, "/api/heals") {
+		if strings.HasPrefix(path, "/dashboard") || strings.HasPrefix(path, "/api/telemetry") || strings.HasPrefix(path, "/api/heals") || strings.HasPrefix(path, "/api/vendors") || strings.HasPrefix(path, "/api/predictions") {
 			return c.Next()
 		}
 

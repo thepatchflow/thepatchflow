@@ -82,3 +82,37 @@ func TestDefaultPathParentExists(t *testing.T) {
 		}
 	}
 }
+
+func TestPredictions(t *testing.T) {
+	s := New(filepath.Join(t.TempDir(), "heals.jsonl"))
+	s.Record(HealEvent{Vendor: "stripe", Endpoint: "/v1/charges", Patch: map[string]string{"card": "source"}})
+	s.Record(HealEvent{Vendor: "stripe", Endpoint: "/v1/charges", Patch: map[string]string{"card": "source"}})
+	s.Record(HealEvent{Vendor: "twilio", Endpoint: "/messages", Patch: map[string]string{"sid": "account_sid"}})
+
+	preds := s.Predictions(0)
+	if len(preds) != 2 {
+		t.Fatalf("expected 2 predictions, got %d", len(preds))
+	}
+	// card->source seen twice should rank above sid->account_sid seen once
+	if preds[0].OldKey != "card" || preds[0].NewKey != "source" {
+		t.Fatalf("expected card->source to lead, got %+v", preds[0])
+	}
+	if preds[0].SeenCount != 2 {
+		t.Fatalf("expected seen_count 2, got %d", preds[0].SeenCount)
+	}
+}
+
+func TestSeedIdempotent(t *testing.T) {
+	s := New(filepath.Join(t.TempDir(), "heals.jsonl"))
+	first := s.Seed()
+	second := s.Seed()
+	if first != 8 {
+		t.Fatalf("expected 8 seed records on first call, got %d", first)
+	}
+	if second != 0 {
+		t.Fatalf("expected 0 new records on second call (idempotent), got %d", second)
+	}
+	if len(s.List(100)) != 8 {
+		t.Fatalf("expected 8 total records, got %d", len(s.List(100)))
+	}
+}

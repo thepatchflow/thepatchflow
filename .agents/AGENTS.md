@@ -28,9 +28,17 @@ The core MVP is complete. Patchflow is structured in two planes:
 - `CommentVerification` stamps verification results on opened PRs.
 - PR opening moved off the proxy hot path into the agent's record handler; 20s agent-call timeout added.
 
-### Phase 9: Predictive Proactive Heals - Current Focus
-Convert the index from reactive to **predictive**: watch vendor changelogs/OpenAPI diffs and pre-generate translation rules + PRs before customer traffic breaks. 
-Steps: (1) expose `healstore.Leaders()` vendor-stats endpoint to the dashboard, (2) seed a multi-vendor labeled dataset, (3) run a real `GITHUB_TOKEN` end-to-end to prove the verification comment on an actual PR, (4) swap the Tkngate mock fallback for the real LLM path so no simulation remains.
+### Phase 9: Predictive Proactive Heals - In Progress
+Convert the index from reactive to **predictive**: watch vendor changelogs/OpenAPI diffs and pre-generate translation rules + PRs before customer traffic breaks.
+
+**Done (2026-09-06):**
+- `healstore.Predictions()` — recurring migration signals ranked by confidence (seen-count / index size); exposed at `GET /api/predictions` (agent + proxy).
+- `get /api/vendors` exposes `Leaders()` per-vendor stats (total heals, verified, distinct endpoints).
+- `./patchflow seed` idempotently seeds a multi-vendor labeled index (Stripe charge→amount, card→source; Twilio sid→account_sid; OpenAI model→deployed_model; Slack channel→channel_id) for immediate demos.
+- Dashboard **Ground Truth** tab now renders **Proactive Heal Predictions** (confidence %, seen count, last heal) above the index.
+- Separate main: `llmClient()` routes via Tkngate Zero-Trust sidecar → falls back to raw `OPENAI_API_KEY` → only mocks when neither exists.
+
+**Next:** (1) run a real `GITHUB_TOKEN` end-to-end to prove the replay-verification comment on an actual PR, (2) watch vendor changelogs/OpenAPI diffs to trigger pre-emptive predictions, (3) expose predictions for a *single* customer's endpoints as "you will break next".
 
 ### Phase 3: Zero-Trust Security (Tkngate Integration) - Partially Done
 The agent routes through `TKNGATE_PROXY_TOKEN` when set, but the real Tkngate sidecar wiring is incomplete. Enterprise CISOs will not allow raw API keys inside an AI agent due to Prompt Injection risks.
